@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页视频接管 - 移动端版
-// @namespace    https://github.com/mason173/aira-browser
-// @version      3.9.1
+// @namespace    https://github.com/cxf35/Video-Takeover
+// @version      3.9.8
 // @description  移动端网页视频接管：视频右下角悬浮按钮（投屏/画中画/全屏），点击全屏后横屏接管播放，支持字幕、长按快进、双击步进、屏幕锁定等功能。
 // @author       Video Takeover
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdHlsZT0ic3RvcC1jb2xvcjojNjY3ZWVhIi8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdHlsZT0ic3RvcC1jb2xvcjojNzY0YmEyIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjAgMTZWMzZMMzIgMjZaIiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIwLjkiLz48cGF0aCBkPSJNMjAgNDJINTJWNDZIMjBaIiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIwLjciLz48cGF0aCBkPSJNMjAgNTBINTVWNTRIMjBaIiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIwLjUiLz48L3N2Zz4=
@@ -14,6 +14,8 @@
 // @connect      *
 // @run-at       document-idle
 // @license      GPL-3.0
+// @downloadURL https://update.greasyfork.org/scripts/598776/%E7%BD%91%E9%A1%B5%E8%A7%86%E9%A2%91%E6%8E%A5%E7%AE%A1%20-%20%E7%A7%BB%E5%8A%A8%E7%AB%AF%E7%89%88.user.js
+// @updateURL https://update.greasyfork.org/scripts/598776/%E7%BD%91%E9%A1%B5%E8%A7%86%E9%A2%91%E6%8E%A5%E7%AE%A1%20-%20%E7%A7%BB%E5%8A%A8%E7%AB%AF%E7%89%88.meta.js
 // ==/UserScript==
 
 (function () {
@@ -28,7 +30,7 @@
         // 自动隐藏控制栏延迟（毫秒）
         controlsAutoHideDelay: 3000,
         // 倍速选项
-        playbackRates: [0.2, 0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0],
+        playbackRates: [0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0],
     };
 
     // ==================== 全局状态 ====================
@@ -678,44 +680,127 @@
             // 进度条
             const progressBar = container.querySelector('.vt-progress-bar');
             let isSeeking = false;
+            let seekTouchId = null;
 
-            const seekByEvent = (e) => {
-                if (state.isLocked) return;
+            // 拖动时显示时间预览气泡
+            const showSeekTimeBubble = (percent) => {
+                let bubble = container.querySelector('.vt-seek-bubble');
+                if (!bubble) {
+                    bubble = document.createElement('div');
+                    bubble.className = 'vt-seek-bubble';
+                    container.appendChild(bubble);
+                }
+                const newTime = percent * (video.duration || 0);
+                bubble.innerHTML = formatTime(newTime) + ' / ' + formatTime(video.duration || 0);
+                // 定位到进度条上方，跟随拖动位置
+                if (state.useCssRotation) {
+                    bubble.style.left = '50%';
+                    bubble.style.top = (percent * 100) + '%';
+                    bubble.style.transform = 'translate(-50%, -50%)';
+                } else {
+                    bubble.style.left = (percent * 100) + '%';
+                    bubble.style.bottom = '20px';
+                    bubble.style.transform = 'translateX(-50%)';
+                }
+                bubble.style.display = 'block';
+            };
+
+            const hideSeekTimeBubble = () => {
+                const bubble = container.querySelector('.vt-seek-bubble');
+                if (bubble) bubble.style.display = 'none';
+            };
+
+            const getPercentFromEvent = (e) => {
                 const rect = progressBar.getBoundingClientRect();
                 const cx = e.touches ? e.touches[0].clientX : e.clientX;
                 const cy = e.touches ? e.touches[0].clientY : e.clientY;
-                let percent;
                 if (state.useCssRotation) {
                     // 容器被CSS旋转90°，进度条的长度方向对应视口的 Y 轴
-                    percent = clamp((cy - rect.top) / rect.height, 0, 1);
+                    return clamp((cy - rect.top) / rect.height, 0, 1);
                 } else {
-                    percent = clamp((cx - rect.left) / rect.width, 0, 1);
+                    return clamp((cx - rect.left) / rect.width, 0, 1);
                 }
+            };
+
+            const seekByEvent = (e) => {
+                if (state.isLocked) return;
+                const percent = getPercentFromEvent(e);
+                const newTime = percent * (video.duration || 0);
                 if (video.duration) {
-                    video.currentTime = percent * video.duration;
+                    video.currentTime = newTime;
                 }
+                showSeekTimeBubble(percent);
+                // 拖动时实时更新进度条显示，不等视频加载完成
+                const playedEl = container.querySelector('.vt-progress-played');
+                const thumbEl = container.querySelector('.vt-progress-thumb');
+                const currentEl = container.querySelector('.vt-current-time');
+                if (playedEl) playedEl.style.width = (percent * 100) + '%';
+                if (thumbEl) thumbEl.style.left = (percent * 100) + '%';
+                if (currentEl) currentEl.textContent = formatTime(newTime);
+                // 拖动全程保持控制栏显示，不自动隐藏
+                if (!state.controlsVisible) {
+                    this.showControls();
+                }
+                this.cancelAutoHide();
             };
 
             progressBar.addEventListener('touchstart', (e) => {
                 if (state.isLocked) return;
                 isSeeking = true;
-                seekByEvent(e);
+                seekTouchId = e.touches[0].identifier;
+                this.showControls();
                 this.cancelAutoHide();
-            }, { passive: true });
-
-            progressBar.addEventListener('touchmove', (e) => {
-                if (!isSeeking || state.isLocked) return;
                 seekByEvent(e);
             }, { passive: true });
 
-            progressBar.addEventListener('touchend', () => {
-                isSeeking = false;
-                this.resetAutoHide();
+            // touchmove/touchend 绑定到 document，手指移出进度条也能继续拖动
+            document.addEventListener('touchmove', (e) => {
+                if (!isSeeking || state.isLocked) return;
+                // 确认是同一个触摸点
+                let touch = null;
+                for (let i = 0; i < e.touches.length; i++) {
+                    if (e.touches[i].identifier === seekTouchId) {
+                        touch = e.touches[i];
+                        break;
+                    }
+                }
+                if (!touch) return;
+                seekByEvent(e);
+                e.preventDefault();
+            }, { passive: false });
+
+            document.addEventListener('touchend', (e) => {
+                if (!isSeeking) return;
+                // 确认是同一个触摸点结束
+                let stillTouching = false;
+                for (let i = 0; i < e.touches.length; i++) {
+                    if (e.touches[i].identifier === seekTouchId) {
+                        stillTouching = true;
+                        break;
+                    }
+                }
+                if (!stillTouching) {
+                    isSeeking = false;
+                    seekTouchId = null;
+                    hideSeekTimeBubble();
+                    this.resetAutoHide();
+                }
+            });
+
+            document.addEventListener('touchcancel', () => {
+                if (isSeeking) {
+                    isSeeking = false;
+                    seekTouchId = null;
+                    hideSeekTimeBubble();
+                    this.resetAutoHide();
+                }
             });
 
             progressBar.addEventListener('mousedown', (e) => {
                 if (state.isLocked) return;
                 isSeeking = true;
+                this.showControls();
+                this.cancelAutoHide();
                 seekByEvent(e);
             });
             document.addEventListener('mousemove', (e) => {
@@ -723,7 +808,10 @@
                 seekByEvent(e);
             });
             document.addEventListener('mouseup', () => {
-                isSeeking = false;
+                if (isSeeking) {
+                    isSeeking = false;
+                    hideSeekTimeBubble();
+                }
             });
 
             // 手势处理：单击、双击、长按、滑动（绑定在整个容器上，确保事件能捕获）
@@ -1858,6 +1946,7 @@
             container.querySelector('.vt-takeover-top-bar').style.pointerEvents = 'auto';
             container.querySelector('.vt-takeover-center-controls').style.opacity = '1';
             container.querySelector('.vt-takeover-center-controls').style.pointerEvents = 'auto';
+            container.querySelector('.vt-takeover-progress').classList.remove('vt-progress-minimal');
             container.querySelector('.vt-takeover-progress').style.opacity = '1';
             container.querySelector('.vt-takeover-progress').style.pointerEvents = 'auto';
             container.querySelector('.vt-takeover-bottom-bar').style.opacity = '1';
@@ -1879,10 +1968,11 @@
             container.querySelector('.vt-takeover-top-bar').style.pointerEvents = 'none';
             container.querySelector('.vt-takeover-center-controls').style.opacity = '0';
             container.querySelector('.vt-takeover-center-controls').style.pointerEvents = 'none';
-            container.querySelector('.vt-takeover-progress').style.opacity = '0';
-            container.querySelector('.vt-takeover-progress').style.pointerEvents = 'none';
             container.querySelector('.vt-takeover-bottom-bar').style.opacity = '0';
             container.querySelector('.vt-takeover-bottom-bar').style.pointerEvents = 'none';
+            // 进度条保留，但变成细条贴底模式
+            container.querySelector('.vt-takeover-progress').classList.add('vt-progress-minimal');
+            container.querySelector('.vt-takeover-progress').style.pointerEvents = 'auto';
             // 隐藏倍速菜单
             container.querySelector('.vt-speed-menu').style.display = 'none';
             // 隐藏字幕面板
@@ -1954,6 +2044,9 @@
             video.addEventListener('ratechange', this._onRateChange = () => this.updateSpeedLabel(video));
             video.addEventListener('ended', this._onEnded = () => this.updatePlayState(video));
             video.addEventListener('progress', this._onProgress = () => this.updateBuffered(video));
+            video.addEventListener('waiting', this._onWaiting = () => this.showLoading());
+            video.addEventListener('canplay', this._onCanPlay = () => this.hideLoading());
+            video.addEventListener('playing', this._onPlaying = () => this.hideLoading());
         },
 
         removeVideoListeners(video) {
@@ -1964,6 +2057,29 @@
             video.removeEventListener('ratechange', this._onRateChange);
             video.removeEventListener('ended', this._onEnded);
             video.removeEventListener('progress', this._onProgress);
+            video.removeEventListener('waiting', this._onWaiting);
+            video.removeEventListener('canplay', this._onCanPlay);
+            video.removeEventListener('playing', this._onPlaying);
+        },
+
+        showLoading() {
+            const container = state.takeoverContainer;
+            if (!container) return;
+            let loading = container.querySelector('.vt-loading');
+            if (!loading) {
+                loading = document.createElement('div');
+                loading.className = 'vt-loading';
+                loading.innerHTML = '<div class="vt-loading-spinner"></div>';
+                container.appendChild(loading);
+            }
+            loading.style.display = 'flex';
+        },
+
+        hideLoading() {
+            const container = state.takeoverContainer;
+            if (!container) return;
+            const loading = container.querySelector('.vt-loading');
+            if (loading) loading.style.display = 'none';
         },
 
         updatePlayState(video) {
@@ -3261,7 +3377,30 @@
                     align-items: center;
                     gap: 10px;
                     z-index: 10;
-                    transition: opacity 0.3s;
+                    transition: all 0.3s;
+                }
+
+                /* 控制栏隐藏时的精简进度条模式 */
+                .vt-takeover-progress.vt-progress-minimal {
+                    bottom: 0;
+                    left: 8px;
+                    right: 8px;
+                    padding: 4px 0;
+                    opacity: 0.8;
+                }
+
+                .vt-takeover-progress.vt-progress-minimal .vt-time {
+                    font-size: 11px;
+                    min-width: 32px;
+                }
+
+                .vt-takeover-progress.vt-progress-minimal .vt-progress-bar {
+                    height: 16px;
+                }
+
+                .vt-takeover-progress.vt-progress-minimal .vt-progress-thumb {
+                    width: 10px;
+                    height: 10px;
                 }
 
                 .vt-time {
@@ -3275,18 +3414,32 @@
 
                 .vt-progress-bar {
                     flex: 1;
-                    height: 4px;
-                    background: rgba(255, 255, 255, 0.3);
-                    border-radius: 2px;
+                    height: 20px; /* 增大触摸热区 */
+                    background: transparent;
                     position: relative;
                     cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                }
+
+                .vt-progress-bar::before {
+                    content: '';
+                    position: absolute;
+                    top: 50%;
+                    left: 0;
+                    right: 0;
+                    height: 4px;
+                    transform: translateY(-50%);
+                    background: rgba(255, 255, 255, 0.3);
+                    border-radius: 2px;
                 }
 
                 .vt-progress-buffered {
                     position: absolute;
-                    top: 0;
+                    top: 50%;
                     left: 0;
-                    height: 100%;
+                    height: 4px;
+                    transform: translateY(-50%);
                     background: rgba(255, 255, 255, 0.4);
                     border-radius: 2px;
                     pointer-events: none;
@@ -3294,9 +3447,10 @@
 
                 .vt-progress-played {
                     position: absolute;
-                    top: 0;
+                    top: 50%;
                     left: 0;
-                    height: 100%;
+                    height: 4px;
+                    transform: translateY(-50%);
                     background: #fff;
                     border-radius: 2px;
                     pointer-events: none;
@@ -3312,6 +3466,21 @@
                     border-radius: 50%;
                     pointer-events: none;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                }
+
+                /* 进度条拖动时间预览气泡 */
+                .vt-seek-bubble {
+                    position: absolute;
+                    display: none;
+                    background: rgba(0, 0, 0, 0.8);
+                    color: #fff;
+                    font-size: 12px;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    white-space: nowrap;
+                    z-index: 20;
+                    pointer-events: none;
+                    font-variant-numeric: tabular-nums;
                 }
 
                 /* 底部栏 */
@@ -3397,31 +3566,37 @@
                 /* 倍速菜单 */
                 .vt-speed-menu {
                     position: absolute;
-                    bottom: 70px;
-                    right: 16px;
-                    background: rgba(0, 0, 0, 0.85);
-                    border-radius: 8px;
-                    padding: 10px;
-                    display: grid;
-                    grid-template-columns: repeat(4, 1fr);
-                    gap: 6px;
+                    bottom: 76px;
+                    left: 41.6%;
+                    transform: translateX(-50%);
+                    background: rgba(0, 0, 0, 0.55);
+                    backdrop-filter: blur(10px);
+                    border-radius: 12px;
+                    padding: 8px 6px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
                     z-index: 20;
-                    max-height: 240px;
+                    max-height: 280px;
                     overflow-y: auto;
+                    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+                    min-width: 56px;
                 }
 
                 .vt-speed-option {
-                    padding: 6px 4px;
+                    padding: 8px 12px;
                     color: #fff;
-                    font-size: 12px;
+                    font-size: 13px;
                     cursor: pointer;
-                    border-radius: 4px;
+                    border-radius: 8px;
                     transition: background 0.15s;
                     text-align: center;
+                    font-variant-numeric: tabular-nums;
                 }
 
-                .vt-speed-option:active {
-                    background: rgba(255,255,255,0.2);
+                .vt-speed-option:active,
+                .vt-speed-option.vt-speed-active {
+                    background: rgba(255,255,255,0.25);
                 }
 
                 /* 长按提示（倍速调节） */
@@ -3452,6 +3627,32 @@
 
                 .vt-lp-hint {
                     display: none;
+                }
+
+                /* 视频加载转圈 */
+                .vt-loading {
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    z-index: 40;
+                    display: none;
+                    align-items: center;
+                    justify-content: center;
+                    pointer-events: none;
+                }
+
+                .vt-loading-spinner {
+                    width: 48px;
+                    height: 48px;
+                    border: 3px solid rgba(255, 255, 255, 0.3);
+                    border-top-color: #fff;
+                    border-radius: 50%;
+                    animation: vtSpin 0.8s linear infinite;
+                }
+
+                @keyframes vtSpin {
+                    to { transform: rotate(360deg); }
                 }
 
                 /* 音量 / 亮度提示 */
